@@ -1,12 +1,18 @@
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// Record audio from the default input device for `duration` seconds.
-/// Returns 16kHz mono f32 samples suitable for Whisper.
-pub fn record(duration: Duration) -> Result<Vec<f32>> {
+struct StreamHandle {
+    _stream: cpal::Stream,
+    samples: Arc<Mutex<Vec<f32>>>,
+    device_rate: u32,
+    channels: usize,
+}
+
+fn start_recording() -> Result<StreamHandle> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -55,26 +61,50 @@ pub fn record(duration: Duration) -> Result<Vec<f32>> {
     };
 
     stream.play().context("failed to start audio stream")?;
-    std::thread::sleep(duration);
-    drop(stream);
 
-    let raw = samples.lock().unwrap().clone();
+    Ok(StreamHandle {
+        _stream: stream,
+        samples,
+        device_rate,
+        channels,
+    })
+}
+
+fn finish_recording(handle: StreamHandle) -> Vec<f32> {
+    drop(handle._stream);
+    let raw = handle.samples.lock().unwrap().clone();
 
     // Convert to mono if stereo
-    let mono = if channels >= 2 {
-        raw.chunks(channels)
-            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+    let mono = if handle.channels >= 2 {
+        raw.chunks(handle.channels)
+            .map(|frame| frame.iter().sum::<f32>() / handle.channels as f32)
             .collect()
     } else {
         raw
     };
 
     // Resample to 16kHz if needed
-    if device_rate == 16000 {
-        Ok(mono)
+    if handle.device_rate == 16000 {
+        mono
     } else {
-        Ok(resample(&mono, device_rate, 16000))
+        resample(&mono, handle.device_rate, 16000)
     }
+}
+
+/// Record audio until `stop` is set to true, or `max_duration` elapses.
+/// Returns 16kHz mono f32 samples suitable for Whisper.
+pub fn record_until_stopped(stop: Arc<AtomicBool>, max_duration: Duration) -> Result<Vec<f32>> {
+    let handle = start_recording()?;
+    let start = Instant::now();
+
+    loop {
+        if stop.load(Ordering::Relaxed) || start.elapsed() >= max_duration {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    Ok(finish_recording(handle))
 }
 
 /// Simple linear interpolation resampler.

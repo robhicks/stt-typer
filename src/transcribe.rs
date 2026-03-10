@@ -41,9 +41,3 @@ pub fn transcribe_with_context(ctx: &WhisperContext, audio: &[f32], language: &s
 
     Ok(text.trim().to_string())
 }
-
-/// Convenience wrapper: loads model and transcribes in one call.
-pub fn transcribe(model_path: &Path, audio: &[f32], language: &str) -> Result<String> {
-    let ctx = create_context(model_path)?;
-    transcribe_with_context(&ctx, audio, language)
-}

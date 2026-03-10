@@ -30,9 +30,8 @@ RUN curl -fSL -o /models/ggml-base.bin \
     --create-dirs \
     https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
 
-COPY --from=builder /build/target/release/stt-mcp /usr/local/bin/stt-mcp
+COPY --from=builder /build/target/release/stt-typer /usr/local/bin/stt-typer
 
 ENV WHISPER_MODEL_PATH=/models/ggml-base.bin
-EXPOSE 3000
 
-CMD ["/usr/local/bin/stt-mcp"]
+CMD ["/usr/local/bin/stt-typer"]

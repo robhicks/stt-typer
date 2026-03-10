@@ -1,13 +1,25 @@
-# stt-mcp
+# stt-typer
 
-A Model Context Protocol (MCP) server that records audio from your microphone and transcribes it to text using [Whisper](https://github.com/ggerganov/whisper.cpp). It communicates over stdio, making it easy to plug into Claude Code or any MCP-compatible client.
+A push-to-talk voice typing CLI for Linux. Hold **right CTRL** to speak, release to transcribe and type the result into the active window using [ydotool](https://github.com/ReimuNotMoe/ydotool). Transcription is powered by [whisper.cpp](https://github.com/ggerganov/whisper.cpp) running locally.
 
 ## Prerequisites
 
-Fedora 43 with a working microphone. Install the build dependencies:
+Fedora 43 (or similar) with a working microphone. Install the build and runtime dependencies:
 
 ```bash
+# Build dependencies
 sudo dnf install alsa-lib-devel clang-devel cmake gcc-c++
+
+# Runtime dependency — virtual keyboard for typing output
+sudo dnf install ydotool
+sudo systemctl enable --now ydotool
+```
+
+You need access to `/dev/input/event*` devices for push-to-talk. Add yourself to the `input` group:
+
+```bash
+sudo usermod -aG input $USER
+# Log out and back in for the group change to take effect
 ```
 
 You also need a Rust toolchain. If you don't have one:
@@ -18,7 +30,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 ## Download the Whisper model
 
-The server uses Whisper's `base` model by default. Download it to the expected location:
+stt-typer uses Whisper's `base` model by default. Download it:
 
 ```bash
 mkdir -p ~/.local/share/stt-mcp
@@ -26,7 +38,7 @@ curl -fSL -o ~/.local/share/stt-mcp/ggml-base.bin \
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
 ```
 
-You can use a different model file by setting the `WHISPER_MODEL_PATH` environment variable.
+You can use a different model file with the `--model` flag or `WHISPER_MODEL_PATH` environment variable.
 
 ## Build
 
@@ -34,79 +46,27 @@ You can use a different model file by setting the `WHISPER_MODEL_PATH` environme
 cargo build --release
 ```
 
-The binary is written to `target/release/stt-mcp`.
+The binary is written to `target/release/stt-typer`.
 
-## Configure Claude Code
-
-Add the server using the Claude CLI:
+## Usage
 
 ```bash
-claude mcp add stt -- /home/YOU/dev/rust-stt-mcp/target/release/stt-mcp
+target/release/stt-typer
 ```
 
-Replace `/home/YOU` with your actual home directory.
+Hold **right CTRL** to speak. A beep signals that recording has started. Release the key to stop recording — the audio is transcribed and typed into the active window.
 
-To pass a custom model path, use the `-e` flag:
+### Options
+
+```
+-m, --max-duration <SECS>   Maximum seconds to record (default: 30)
+-l, --language <LANG>       Language hint for Whisper (default: "en")
+-M, --model <PATH>          Path to Whisper model file [env: WHISPER_MODEL_PATH]
+```
+
+### Example
 
 ```bash
-claude mcp add stt \
-  -e WHISPER_MODEL_PATH=/home/YOU/.local/share/stt-mcp/ggml-base.bin \
-  -- /home/YOU/dev/rust-stt-mcp/target/release/stt-mcp
+# Use the large model and set Spanish as the language
+target/release/stt-typer --model ~/models/ggml-large.bin --language es
 ```
-
-By default this adds the server to your user-level settings (`~/.claude/settings.json`). Use `-s project` to scope it to the current project instead.
-
-## Test it
-
-### Quick smoke test
-
-Pipe an MCP `initialize` request into the server and confirm it responds:
-
-```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' \
-  | target/release/stt-mcp 2>/dev/null \
-  | head -c 2000
-```
-
-You should see a JSON response containing `"serverInfo"` and `"tools"` in the capabilities.
-
-### Test recording and transcription
-
-The MCP protocol requires a full `initialize` / `notifications/initialized` handshake before tool calls. A simple pipe closes stdin too early, so we use a FIFO to keep the connection open. Speak into your microphone during the recording window:
-
-```bash
-FIFO=$(mktemp -u) && mkfifo "$FIFO"
-target/release/stt-mcp < "$FIFO" 2>/dev/null &
-SERVER_PID=$!
-exec 3>"$FIFO"
-
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' >&3
-sleep 1
-echo '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' >&3
-sleep 1
-echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"record_and_transcribe","arguments":{"duration_secs":3,"language":"en"}}}' >&3
-sleep 8
-
-exec 3>&-
-wait $SERVER_PID 2>/dev/null
-rm -f "$FIFO"
-```
-
-The server writes JSON-RPC responses to stdout. The second response will contain the transcribed text from your microphone.
-
-### Test from Claude Code
-
-Once configured in `settings.json`, restart Claude Code and ask it to use the `record_and_transcribe` tool. For example:
-
-> "Use the stt server to record 5 seconds of audio and transcribe it."
-
-## Tool reference
-
-### `record_and_transcribe`
-
-Records audio from the default microphone and returns transcribed text.
-
-| Parameter       | Type   | Default | Description                                      |
-|-----------------|--------|---------|--------------------------------------------------|
-| `duration_secs` | number | `5`     | How many seconds to record                       |
-| `language`      | string | `"en"`  | Language hint for Whisper (e.g. `"en"`, `"es"`)  |
